@@ -15,24 +15,18 @@ function Chip({ status }) {
 }
 
 function VenueCard({ v }) {
-  const Wrapper = v.href ? Link : 'div';
-  const props = v.href ? { href: v.href } : {};
+  const cls =
+    'group relative flex flex-col rounded-xl border border-edge bg-slab p-5 transition ' +
+    (v.href
+      ? 'hover:border-brass/50 hover:bg-slab/80 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brass'
+      : 'opacity-80');
 
-  return (
-    <Wrapper
-      {...props}
-      className={`group relative flex flex-col rounded-xl border border-edge bg-slab p-5 transition ${
-        v.href
-          ? 'hover:border-brass/50 hover:bg-slab/80 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brass'
-          : 'opacity-80'
-      }`}
-    >
+  const inner = (
+    <>
       <div className="flex items-start justify-between gap-3">
         <div>
           <h3 className="text-lg font-semibold text-bone">{v.name}</h3>
-          {v.branch && (
-            <p className="mt-0.5 font-mono text-xs text-mute">{v.branch}</p>
-          )}
+          {v.branch && <p className="mt-0.5 font-mono text-xs text-mute">{v.branch}</p>}
         </div>
         <Chip status={v.status} />
       </div>
@@ -53,13 +47,7 @@ function VenueCard({ v }) {
           {v.steps.map((s, i) => (
             <li key={s} className="flex items-center gap-1.5">
               {i > 0 && <span className="text-edge">→</span>}
-              <span
-                className={
-                  v.status === 'partial' && i === v.steps.length - 1
-                    ? 'text-rust'
-                    : 'text-bone/70'
-                }
-              >
+              <span className={v.status === 'partial' && i === v.steps.length - 1 ? 'text-rust' : 'text-bone/70'}>
                 {s}
               </span>
             </li>
@@ -75,8 +63,17 @@ function VenueCard({ v }) {
           <span className="transition group-hover:translate-x-0.5">→</span>
         </span>
       )}
-    </Wrapper>
+    </>
   );
+
+  if (v.href) {
+    return (
+      <Link href={v.href} className={cls}>
+        {inner}
+      </Link>
+    );
+  }
+  return <div className={cls}>{inner}</div>;
 }
 
 export default function Home() {
