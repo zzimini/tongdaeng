@@ -1,97 +1,135 @@
-/**
- * 예약처 목록. 새 방탈출을 붙이면 여기에 항목만 추가하면 메인에 나타난다.
- *
- * status
- *   'ready'   연결됨      — 도구로 예약까지 끝남
- *   'partial' 부분 지원   — 일부 단계는 손으로 마무리해야 함
- *   'blocked' 미지원      — 구조상 자동화가 막힌 곳
- *   'planned' 준비 중     — 아직 안 붙임
- *
- * open  { h, m, label }  한국 시각 기준 오픈 시각. 없으면 카운트다운에서 제외.
- */
-export const VENUES = [
-  {
-    slug: 'play33',
-    name: '플레이33',
-    branch: '건대점',
-    href: '/play33',
-    status: 'ready',
-    open: { h: 8, m: 0, label: '매일 08:00' },
-    stack: 'Laravel · CSRF 토큰',
-    steps: ['슬롯 예열', '예약 전송'],
-    note: '예열과 발사를 한 번에 쏘는 원샷까지 붙어 있습니다. 마감된 슬롯은 예열 단계에서 걸러집니다.',
-  },
-  {
-    slug: 'oasis',
-    name: '오아시스 뮤지엄',
-    branch: '홍대',
-    href: null,
-    status: 'partial',
-    open: { h: 0, m: 0, label: '자정 · 6일 후 날짜' },
-    stack: 'PHP · PHPSESSID',
-    steps: ['슬롯 선점', '예약 생성', '결제 확정'],
-    note: '선점과 예약 생성까지는 자동으로 됩니다. 마지막 결제 확정이 KCP 모듈에 묶여 있어 브라우저에서 직접 눌러야 합니다.',
-  },
-];
+import {
+  LIST, req, csrfFrom, cleanCookie, doWarm, doFire,
+} from '@/lib/p33';
 
-export const STATUS = {
-  ready: {
-    label: '연결됨',
-    chip: '작동',
-    dot: 'bg-jade',
-    text: 'text-jade',
-    ring: 'ring-jade/30',
-  },
-  partial: {
-    label: '부분 지원',
-    chip: '일부 수동',
-    dot: 'bg-brass',
-    text: 'text-brass',
-    ring: 'ring-brass/30',
-  },
-  blocked: {
-    label: '미지원',
-    chip: '막힘',
-    dot: 'bg-rust',
-    text: 'text-rust',
-    ring: 'ring-rust/30',
-  },
-  planned: {
-    label: '준비 중',
-    chip: '대기',
-    dot: 'bg-mute',
-    text: 'text-mute',
-    ring: 'ring-mute/20',
-  },
-};
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+export const maxDuration = 20;
 
-export const ORDER = ['ready', 'partial', 'blocked', 'planned'];
-
-/** 한국 시각 기준, 다음 hh:mm 까지 남은 밀리초 */
-export function msUntilKST(h, m) {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Seoul',
-    hour12: false,
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).formatToParts(new Date());
-
-  const now = Object.fromEntries(
-    parts.filter((p) => p.type !== 'literal').map((p) => [p.type, Number(p.value)])
-  );
-
-  const cur = (now.hour % 24) * 3600 + now.minute * 60 + now.second;
-  let diff = h * 3600 + m * 60 - cur;
-  if (diff <= 0) diff += 86400;
-  return diff * 1000;
+function json(data, status = 200) {
+  return Response.json(data, { status });
 }
 
-/** 오픈 시각이 있는 곳 중 가장 먼저 열리는 곳 */
-export function nextUp(venues = VENUES) {
-  const withOpen = venues.filter((v) => v.open && v.status !== 'planned');
-  if (!withOpen.length) return null;
-  return withOpen
-    .map((v) => ({ venue: v, ms: msUntilKST(v.open.h, v.open.m) }))
-    .sort((a, b) => a.ms - b.ms)[0];
+export async function POST(request) {
+  const expected = process.env.ADMIN_KEY;
+  if (!expected) return json({ ok: false, msg: 'ADMIN_KEY 환경변수가 설정되지 않았습니다' }, 500);
+  if (request.headers.get('x-admin-key') !== expected) {
+    return json({ ok: false, msg: '인증 실패 — 관리자 키를 확인하세요' }, 401);
+  }
+
+  let b;
+  try {
+    b = await request.json();
+  } catch {
+    return json({ ok: false, msg: '잘못된 요청 본문' }, 400);
+  }
+
+  const act = b.act || '';
+  const source = b.source === 'manual' ? 'manual' : 'server';
+  const mToken = (b.token || '').trim();
+  const mCookie = cleanCookie(b.cookie || '');
+  const ajax = !!b.ajax;
+
+  const slot = {
+    branch: b.branch ?? '',
+    theme: b.theme ?? '',
+    date: b.date ?? '',
+    time: b.time ?? '',
+  };
+  const input = {
+    name: b.name ?? '',
+    phone: b.phone ?? '',
+    people: b.people ?? '',
+  };
+
+  let manual = {};
+  if (b.manualJson) {
+    try {
+      const m = JSON.parse(b.manualJson);
+      if (m && typeof m === 'object') manual = m;
+    } catch {
+      return json({ ok: false, msg: '수동 덮어쓰기 JSON 이 올바르지 않습니다' });
+    }
+  }
+
+  const target = (b.actionOverride || '').trim();
+
+  try {
+    if (act === 'ping') {
+      return json({ ok: true, stage: 'ping', now: new Date().toISOString() });
+    }
+
+    if (act === 'check') {
+      if (!mCookie) return json({ ok: false, msg: '쿠키를 입력하세요' });
+      const r = await req(LIST, { cookie: mCookie });
+      const server = csrfFrom(r.body);
+      const match = !!server && server === mToken;
+      return json({
+        ok: match,
+        code: r.code,
+        tokenYou: mToken,
+        tokenServer: server,
+        cookieFresh: r.cookie,
+        msg: match ? '짝 맞음 — 발사 가능' : '짝 안 맞음 — 새 세트로 교체하세요',
+      });
+    }
+
+    if (source === 'manual' && (act === 'warm' || act === 'blitz')) {
+      if (!mToken || !mCookie) {
+        return json({ ok: false, msg: '수동 모드에서는 토큰과 쿠키를 둘 다 입력해야 합니다' });
+      }
+    }
+
+    if (act === 'warm') {
+      const w = await doWarm({ source, slot, token: mToken, cookie: mCookie, ajax });
+      if (w.err) return json(w.err);
+      return json({
+        ok: true, stage: '예열', source,
+        code: w.code, ms: w.ms,
+        action: w.form.action, actionRaw: w.form.actionRaw,
+        formId: w.form.formId, method: w.form.method,
+        fields: w.form.fields,
+        state: { form: w.form, token: w.token, cookie: w.cookie, source },
+      });
+    }
+
+    if (act === 'fire') {
+      const st = b.state;
+      if (!st || !st.form) return json({ ok: false, msg: '먼저 예열하세요' });
+      const res = await doFire({
+        form: st.form,
+        token: source === 'manual' ? mToken : st.token,
+        cookie: source === 'manual' ? mCookie : st.cookie,
+        source, input, manual, target, ajax,
+        dry: !!b.dry,
+      });
+      return json({ ...res, stage: '발사', source });
+    }
+
+    if (act === 'blitz') {
+      const t0 = Date.now();
+      const w = await doWarm({ source, slot, token: mToken, cookie: mCookie, ajax });
+      if (w.err) return json({ ...w.err, stage: '예열' });
+
+      const res = await doFire({
+        form: w.form, token: w.token, cookie: w.cookie,
+        source, input, manual, target, ajax,
+        dry: !!b.dry,
+      });
+
+      return json({
+        ...res,
+        stage: '예열+발사',
+        source,
+        warmMs: w.ms,
+        totalMs: Date.now() - t0,
+        fields: w.form.fields,
+        state: { form: w.form, token: w.token, cookie: w.cookie, source },
+      });
+    }
+
+    return json({ ok: false, msg: `알 수 없는 act: ${act}` });
+  } catch (e) {
+    return json({ ok: false, msg: '서버 오류', error: String(e?.message || e) }, 500);
+  }
 }
