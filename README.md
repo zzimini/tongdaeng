@@ -7,10 +7,15 @@ app/
   page.jsx              메인 — 예약처 목록 + 다음 오픈 카운트다운
   play33/page.jsx       플레이33 예약 도구
   api/p33/route.js      플레이33 API
+  keyescape/page.jsx    키이스케이프 테마 고르기 + 알림봇 실행 명령
+  api/keyescape/route.js  키이스케이프 조회 프록시 (읽기 전용)
   _components/Countdown.jsx
 lib/
   venues.js             예약처 레지스트리 ← 새 방탈출은 여기에 추가
   p33.js                플레이33 요청/파싱 로직
+  keyescape.js          키이스케이프 조회 · 변화 감지 · 알림 전송
+scripts/
+  keyescape-watch.mjs   키이스케이프 취소표 알림봇 (PC 에서 켜두는 프로세스)
 ```
 
 ## 실행
@@ -20,6 +25,19 @@ npm install
 cp .env.example .env.local     # ADMIN_KEY 값을 바꿀 것
 npm run dev
 ```
+
+## 키이스케이프 취소표 알림봇
+
+Vercel 함수는 상주할 수 없어서 봇은 PC 에서 돌립니다. `.env.local` 에 알림 채널을 넣고:
+
+```bash
+# TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID, 또는 DISCORD_WEBHOOK_URL
+npm run keyescape -- --test
+npm run keyescape -- "https://www.keyescape.com/reservation1.php?zizum_num=18&theme_num=57&theme_info_num=34"
+```
+
+옵션: `--every 60` (초, 최소 20) · `--date 2026-10-03` (여러 번) · `--after 18:00` · `--before 21:00`.
+`/keyescape` 페이지에서 테마를 고르면 이 명령을 만들어 줍니다. Node 22 이상이 필요합니다 (`--env-file-if-exists`).
 
 ## 배포
 
