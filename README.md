@@ -7,13 +7,16 @@ app/
   page.jsx              메인 — 예약처 목록 + 다음 오픈 카운트다운
   play33/page.jsx       플레이33 예약 도구
   api/p33/route.js      플레이33 API
-  keyescape/page.jsx    키이스케이프 테마 고르기 + 알림봇 실행 명령
+  keyescape/page.jsx    키이스케이프 취소표 알림봇 — 테마 고르기 + 실행 명령
+  keyescape/book/page.jsx  키이스케이프 예약 도우미 — 북마클릿 + 2단계 바로가기
+  keyescape/_ui.jsx     위 두 페이지 공통 (테마 선택 · 현황 표)
   api/keyescape/route.js  키이스케이프 조회 프록시 (읽기 전용)
   _components/Countdown.jsx
 lib/
   venues.js             예약처 레지스트리 ← 새 방탈출은 여기에 추가
   p33.js                플레이33 요청/파싱 로직
   keyescape.js          키이스케이프 조회 · 변화 감지 · 알림 전송
+  keyescape-book.js     키이스케이프 예약 도우미 (2단계 바로가기 + 채우기 북마클릿, 캡차는 사람이)
 scripts/
   keyescape-watch.mjs   키이스케이프 취소표 알림봇 (PC 에서 켜두는 프로세스)
 ```
