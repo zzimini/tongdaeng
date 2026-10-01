@@ -1,11 +1,205 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { fmtDate } from '@/lib/keyescape';
-import { STEP2, step2Fields, splitPhone, bookmarklet } from '@/lib/keyescape-book';
+import { fmtDate, addDays } from '@/lib/keyescape';
+import {
+  STEP2, BRANCH_OPEN, step2Fields, splitPhone, bookmarklet, opensOn, kstMs,
+} from '@/lib/keyescape-book';
 import { box, lbl, card, btn, h2, Copy, Header, useThemeView, ThemePicker, SlotGrid } from '../_ui';
 
 const ME_KEY = 'tongdaeng_keyescape_me';
+
+const POLL_FROM = 3_000; // 오픈 몇 ms 전부터 조회
+const POLL_EVERY = 500;
+const POLL_UNTIL = 90_000; // 오픈 후 이만큼 안 열리면 포기
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function left(ms) {
+  if (ms <= 0) return '0초';
+  const s = Math.ceil(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return [h && `${h}시간`, (h || m) && `${m}분`, `${s % 60}초`].filter(Boolean).join(' ');
+}
+
+/**
+ * 아직 안 열린 날짜를 골라두고, 오픈 순간 그 날짜를 조회해서 원하는 시간이 열려 있으면
+ * 바로 reservation2.php 로 이동한다. 슬롯 번호는 날짜마다 달라서 미리 정하지 않고 열린 뒤 받는다.
+ */
+function OpenWait({ view, zizum }) {
+  const doing = view.theme.doing;
+  const times = [...new Set(Object.values(view.dates).flat().map((s) => s.time))].sort();
+
+  const [date, setDate] = useState(addDays(view.today, doing)); // 다음에 열릴 날짜
+  const [time, setTime] = useState(times[0] || '');
+  const [at, setAt] = useState(BRANCH_OPEN[zizum] || '');
+  const [armed, setArmed] = useState(false);
+  const [now, setNow] = useState(Date.now());
+  const [state, setState] = useState(null); // { tone, msg }
+  const [go, setGo] = useState(null); // 이동할 step2 필드
+  const formRef = useRef(null);
+
+  const openDate = date ? opensOn(date, doing) : '';
+  const openMs = openDate && /^\d{2}:\d{2}$/.test(at) ? kstMs(openDate, at) : NaN;
+  const ready = date && time && !Number.isNaN(openMs);
+
+  useEffect(() => {
+    if (!armed) return;
+    const id = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(id);
+  }, [armed]);
+
+  useEffect(() => {
+    if (!armed) return;
+    let stop = false;
+    const end = (tone, msg) => {
+      setState({ tone, msg });
+      setArmed(false);
+    };
+
+    // 이미 열린 날짜면 openMs 가 과거라서, 대기 시작 시점부터 센다
+    const deadline = Math.max(openMs, Date.now()) + POLL_UNTIL;
+
+    (async () => {
+      let tries = 0;
+      while (!stop) {
+        const rest = openMs - Date.now();
+        if (rest > POLL_FROM) {
+          setState({ tone: 'wait', msg: '오픈 대기 중' });
+          await sleep(Math.min(rest - POLL_FROM, 250));
+          continue;
+        }
+        if (Date.now() > deadline) {
+          end('bad', `${POLL_UNTIL / 1000}초 동안 조회했지만 ${fmtDate(date)} 이 열리지 않았습니다. 오픈 시각을 확인하세요.`);
+          return;
+        }
+
+        tries++;
+        let j = null;
+        try {
+          j = await (await fetch(`/api/keyescape?zizum=${zizum}&theme=${view.theme.theme}&date=${date}`)).json();
+        } catch {
+          /* 다음 바퀴에 다시 */
+        }
+        if (stop) return;
+
+        if (j?.slots) {
+          const s = j.slots.find((x) => x.time === time);
+          if (!s) {
+            end('bad', `${fmtDate(date)} 에 ${time} 이 없습니다 (${j.slots.map((x) => x.time).join(', ')})`);
+            return;
+          }
+          if (!s.open) {
+            end('bad', `${fmtDate(date)} ${time} 은 이미 찼습니다`);
+            return;
+          }
+          setState({ tone: 'good', msg: `열림! #${s.num} 로 이동합니다` });
+          setGo(step2Fields(view.theme, date, s));
+          setArmed(false);
+          return;
+        }
+
+        if (j?.openAt && j.openAt !== at) setAt(j.openAt); // 서버가 알려준 오픈 시각으로 맞춤
+        setState({ tone: 'wait', msg: `조회 ${tries}회 · ${j?.msg || '응답 없음'}` });
+        await sleep(POLL_EVERY);
+      }
+    })();
+
+    return () => {
+      stop = true;
+    };
+  }, [armed]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (go) formRef.current?.submit();
+  }, [go]);
+
+  const tone = { wait: 'text-brass', good: 'text-jade', bad: 'text-rust' };
+
+  return (
+    <section className={card}>
+      <h2 className={h2}>4 · 오픈 대기 · 열리는 순간 바로 이동</h2>
+
+      <div className="grid gap-4 sm:grid-cols-3">
+        <div>
+          <label className={lbl}>날짜</label>
+          <input
+            className={box}
+            type="date"
+            min={view.today}
+            value={date}
+            disabled={armed}
+            onChange={(e) => setDate(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className={lbl}>시간</label>
+          <select className={box} value={time} disabled={armed} onChange={(e) => setTime(e.target.value)}>
+            {times.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className={lbl}>예약 오픈 시각</label>
+          <input className={box} type="time" value={at} disabled={armed} onChange={(e) => setAt(e.target.value)} />
+        </div>
+      </div>
+
+      {ready && (
+        <p className="mt-4 text-sm text-mute">
+          <span className="text-bone">{fmtDate(date)}</span> 은{' '}
+          <span className="text-bone">
+            {fmtDate(openDate)} {at}
+          </span>{' '}
+          에 열립니다 (예약 가능 {doing}일)
+          {openMs <= Date.now() && ' · 이미 열린 날짜라 누르면 바로 조회합니다'}
+        </p>
+      )}
+
+      <div className="mt-5 flex flex-wrap items-center gap-4">
+        {armed ? (
+          <button onClick={() => setArmed(false)} className={`${btn} bg-rust text-ink hover:bg-rust/90`}>
+            대기 취소
+          </button>
+        ) : (
+          <button
+            onClick={() => {
+              setGo(null);
+              setState(null);
+              setArmed(true);
+            }}
+            disabled={!ready}
+            className={`${btn} bg-brass text-ink hover:bg-brass/90`}
+          >
+            대기 시작
+          </button>
+        )}
+        {armed && openMs > now && (
+          <span className="font-mono text-2xl tabular-nums text-bone">{left(openMs - now)}</span>
+        )}
+        {state && <span className={`font-mono text-xs ${tone[state.tone]}`}>{state.msg}</span>}
+      </div>
+
+      {go && (
+        <form ref={formRef} method="post" action={STEP2}>
+          {Object.entries(go).map(([k, v]) => (
+            <input key={k} type="hidden" name={k} value={v} />
+          ))}
+        </form>
+      )}
+
+      <p className="mt-5 font-mono text-[11px] leading-relaxed text-edge">
+        오픈 {POLL_FROM / 1000}초 전부터 {POLL_EVERY / 1000}초 간격으로 그 날짜만 조회합니다. 열리면 이 탭이 바로
+        예약 화면으로 넘어가니 북마클릿 → 캡차 → 예약하기만 누르세요. 대기 중엔 이 탭을 앞에 띄워두세요 (크롬은
+        뒤로 간 탭의 타이머를 늦춥니다). 윈도우 시계를 미리 동기화해 두세요.
+      </p>
+    </section>
+  );
+}
 
 export default function KeyescapeBook() {
   const tv = useThemeView();
@@ -149,6 +343,8 @@ export default function KeyescapeBook() {
             </li>
           </ol>
         </section>
+
+        {view && <OpenWait key={view.theme.info} view={view} zizum={tv.zizum} />}
 
         <section className="rounded-xl border border-rust/40 bg-rust/5 p-5 sm:p-6">
           <h2 className="mb-4 font-mono text-xs uppercase tracking-[0.2em] text-rust">알아둘 것</h2>

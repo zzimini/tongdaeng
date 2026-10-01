@@ -16,7 +16,7 @@ lib/
   venues.js             예약처 레지스트리 ← 새 방탈출은 여기에 추가
   p33.js                플레이33 요청/파싱 로직
   keyescape.js          키이스케이프 조회 · 변화 감지 · 알림 전송
-  keyescape-book.js     키이스케이프 예약 도우미 (2단계 바로가기 + 채우기 북마클릿, 캡차는 사람이)
+  keyescape-book.js     키이스케이프 예약 도우미 (2단계 바로가기 · 오픈 대기 · 채우기 북마클릿, 캡차는 사람이)
 scripts/
   keyescape-watch.mjs   키이스케이프 취소표 알림봇 (PC 에서 켜두는 프로세스)
 ```

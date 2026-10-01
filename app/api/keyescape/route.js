@@ -1,4 +1,4 @@
-import { themes, resolve, scan, reserveUrl } from '@/lib/keyescape';
+import { themes, resolve, scan, day, reserveUrl } from '@/lib/keyescape';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -8,16 +8,28 @@ export const maxDuration = 30;
  * 읽기 전용 프록시 (브라우저는 CORS 때문에 keyescape 를 직접 못 부른다)
  *   GET ?zizum=18          → 테마 목록
  *   GET ?zizum=18&info=34  → 예약 가능 창 전체 슬롯
+ *   GET ?zizum=18&theme=57&date=2026-10-08 → 그 날짜만 (오픈 대기용, 테마 목록 조회 생략)
  */
 export async function GET(request) {
   const q = new URL(request.url).searchParams;
   const zizum = q.get('zizum') || '';
   const info = q.get('info') || '';
-  if (!/^\d{1,4}$/.test(zizum) || (info && !/^\d{1,5}$/.test(info))) {
-    return Response.json({ ok: false, msg: 'zizum / info 는 숫자여야 합니다' }, { status: 400 });
+  const theme = q.get('theme') || '';
+  const date = q.get('date') || '';
+  if (
+    !/^\d{1,4}$/.test(zizum) ||
+    (info && !/^\d{1,5}$/.test(info)) ||
+    (theme && !/^\d{1,5}$/.test(theme)) ||
+    (date && !/^\d{4}-\d{2}-\d{2}$/.test(date))
+  ) {
+    return Response.json({ ok: false, msg: 'zizum / info / theme / date 형식이 틀렸습니다' }, { status: 400 });
   }
 
   try {
+    if (theme && date) {
+      return Response.json({ ok: true, date, ...(await day(zizum, theme, date)) });
+    }
+
     if (!info) return Response.json({ ok: true, themes: await themes(zizum) });
 
     const t = await resolve({ zizum, info });
