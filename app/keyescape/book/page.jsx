@@ -15,6 +15,11 @@ const POLL_UNTIL = 90_000; // 오픈 후 이만큼 안 열리면 포기
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+const stamp = () => {
+  const d = new Date();
+  return `${d.toTimeString().slice(0, 8)}.${String(d.getMilliseconds()).padStart(3, '0')}`;
+};
+
 function left(ms) {
   if (ms <= 0) return '0초';
   const s = Math.ceil(ms / 1000);
@@ -40,11 +45,17 @@ function OpenWait({ view, zizum }) {
   const [go, setGo] = useState(null); // 이동할 step2 필드
   const [skew, setSkew] = useState(null); // PC 시계 - 서버 시계 (ms)
   const [manual, setManual] = useState(false); // 수동 오픈 조회 중
+  const [log, setLog] = useState([]); // [{ at, tone, msg }] 지나간 메시지도 남겨둔다
   const formRef = useRef(null);
 
   const openDate = date ? opensOn(date, doing) : '';
   const openMs = openDate && /^\d{2}:\d{2}$/.test(at) ? kstMs(openDate, at) : NaN;
   const ready = date && time && !Number.isNaN(openMs);
+
+  const say = (tone, msg) => {
+    setState({ tone, msg });
+    setLog((l) => [...l.slice(-199), { at: stamp(), tone, msg }]);
+  };
 
   useEffect(() => {
     if (!armed) return;
@@ -56,7 +67,7 @@ function OpenWait({ view, zizum }) {
     if (!armed) return;
     let stop = false;
     const end = (tone, msg) => {
-      setState({ tone, msg });
+      say(tone, msg);
       setArmed(false);
     };
 
@@ -101,13 +112,15 @@ function OpenWait({ view, zizum }) {
     };
 
     (async () => {
-      setState({ tone: 'wait', msg: '서버 시계 맞추는 중' });
+      say('wait', '서버 시계 맞추는 중');
       await calibrate(6);
+      say('wait', `서버 시계 맞춤 · PC 가 ${(-off / 1000).toFixed(2)}초 ${off < 0 ? '빠름' : '느림'} · 목표 ${new Date(target).toTimeString().slice(0, 8)} (서버 시계)`);
       let recal = false;
       // 이미 열린 날짜면 target 이 과거라서, 대기 시작 시점부터 센다
       const deadline = Math.max(target, clock()) + POLL_UNTIL;
 
       let tries = 0;
+      let last = '';
       while (!stop) {
         const rest = target - clock();
         if (rest > POLL_FROM) {
@@ -116,7 +129,10 @@ function OpenWait({ view, zizum }) {
             await calibrate(4);
             continue;
           }
-          setState({ tone: 'wait', msg: '오픈 대기 중' });
+          if (last !== '대기') {
+            last = '대기';
+            say('wait', '오픈 대기 중');
+          }
           await sleep(Math.min(rest - POLL_FROM, 250));
           continue;
         }
@@ -131,7 +147,7 @@ function OpenWait({ view, zizum }) {
 
         const r = pickSlot(j);
         if (r?.fields) {
-          setState({ tone: 'good', msg: `열림! #${r.num} 로 이동합니다` });
+          say('good', `조회 ${tries}회 · 열림! #${r.num} 로 이동합니다`);
           setGo(r.fields);
           setArmed(false);
           return;
@@ -141,7 +157,14 @@ function OpenWait({ view, zizum }) {
           return;
         }
 
-        setState({ tone: 'wait', msg: `조회 ${tries}회 · ${j?.msg || '응답 없음'}` });
+        // 같은 응답이 반복되면 기록엔 한 줄만
+        const why = j?.msg || '응답 없음';
+        if (why !== last) {
+          last = why;
+          say('wait', `조회 ${tries}회 · ${why}`);
+        } else {
+          setState({ tone: 'wait', msg: `조회 ${tries}회 · ${why}` });
+        }
         await sleep(POLL_EVERY);
       }
     })();
@@ -167,7 +190,7 @@ function OpenWait({ view, zizum }) {
   // 사람이 직접 오픈을 보고 누를 때. 슬롯 번호는 날짜마다 달라서 한 번 조회해서 받는다
   async function openNow() {
     setManual(true);
-    setState({ tone: 'wait', msg: '수동 조회 중' });
+    say('wait', '수동 오픈 · 조회 중');
     let j = null;
     try {
       j = await (await fetch(`/api/keyescape?zizum=${zizum}&theme=${view.theme.theme}&date=${date}`)).json();
@@ -177,11 +200,11 @@ function OpenWait({ view, zizum }) {
     setManual(false);
     const r = pickSlot(j);
     if (r?.fields) {
-      setState({ tone: 'good', msg: `열림! #${r.num} 로 이동합니다` });
+      say('good', `수동 오픈 · 열림! #${r.num} 로 이동합니다`);
       setGo(r.fields);
       setArmed(false);
     } else {
-      setState({ tone: 'bad', msg: r?.bad || `아직 안 열렸습니다 · ${j?.msg || '응답 없음'}` });
+      say('bad', `수동 오픈 · ${r?.bad || `아직 안 열렸습니다 · ${j?.msg || '응답 없음'}`}`);
     }
   }
 
@@ -240,6 +263,7 @@ function OpenWait({ view, zizum }) {
             onClick={() => {
               setGo(null);
               setState(null);
+              setLog([]);
               setArmed(true);
             }}
             disabled={!ready}
@@ -265,6 +289,17 @@ function OpenWait({ view, zizum }) {
           이 PC 시계가 서버보다 {(Math.abs(skew) / 1000).toFixed(1)}초 {skew > 0 ? '빠릅니다' : '느립니다'} · 서버
           시계 기준으로 맞춰 셉니다
         </p>
+      )}
+
+      {log.length > 0 && (
+        <ol className="mt-4 max-h-60 overflow-y-auto rounded-lg border border-edge p-3 font-mono text-[11px] leading-relaxed">
+          {log.map((x, i) => (
+            <li key={i} className={tone[x.tone]}>
+              <span className="mr-2 text-mute">{x.at}</span>
+              {x.msg}
+            </li>
+          ))}
+        </ol>
       )}
 
       {go && (

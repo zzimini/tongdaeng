@@ -27,7 +27,15 @@ export async function GET(request) {
 
   try {
     if (theme && date) {
-      return Response.json({ ok: true, date, ...(await day(zizum, theme, date)) });
+      const t0 = Date.now();
+      const d = await day(zizum, theme, date);
+      // 오픈 대기 때 무슨 응답이 왔는지 터미널에 남긴다
+      const open = d.slots?.filter((x) => x.open).length;
+      console.log(
+        `[keyescape] ${new Date().toTimeString().slice(0, 8)} zizum=${zizum} theme=${theme} ${date} ` +
+          `${d.slots ? `슬롯 ${d.slots.length}개 (열림 ${open})` : d.msg} · ${Date.now() - t0}ms`
+      );
+      return Response.json({ ok: true, date, ...d });
     }
 
     if (!info) return Response.json({ ok: true, themes: await themes(zizum) });
