@@ -39,6 +39,7 @@ function OpenWait({ view, zizum }) {
   const [state, setState] = useState(null); // { tone, msg }
   const [go, setGo] = useState(null); // 이동할 step2 필드
   const [skew, setSkew] = useState(null); // PC 시계 - 서버 시계 (ms)
+  const [manual, setManual] = useState(false); // 수동 오픈 조회 중
   const formRef = useRef(null);
 
   const openDate = date ? opensOn(date, doing) : '';
@@ -128,19 +129,15 @@ function OpenWait({ view, zizum }) {
         const j = await ask();
         if (stop) return;
 
-        if (j?.slots) {
-          const s = j.slots.find((x) => x.time === time);
-          if (!s) {
-            end('bad', `${fmtDate(date)} 에 ${time} 이 없습니다 (${j.slots.map((x) => x.time).join(', ')})`);
-            return;
-          }
-          if (!s.open) {
-            end('bad', `${fmtDate(date)} ${time} 은 이미 찼습니다`);
-            return;
-          }
-          setState({ tone: 'good', msg: `열림! #${s.num} 로 이동합니다` });
-          setGo(step2Fields(view.theme, date, s));
+        const r = pickSlot(j);
+        if (r?.fields) {
+          setState({ tone: 'good', msg: `열림! #${r.num} 로 이동합니다` });
+          setGo(r.fields);
           setArmed(false);
+          return;
+        }
+        if (r?.bad) {
+          end('bad', r.bad);
           return;
         }
 
@@ -157,6 +154,36 @@ function OpenWait({ view, zizum }) {
   useEffect(() => {
     if (go) formRef.current?.submit();
   }, [go]);
+
+  // 조회 결과 → { fields, num } 이동 가능 / { bad } 포기 / null 아직 안 열림
+  function pickSlot(j) {
+    if (!j?.slots) return null;
+    const s = j.slots.find((x) => x.time === time);
+    if (!s) return { bad: `${fmtDate(date)} 에 ${time} 이 없습니다 (${j.slots.map((x) => x.time).join(', ')})` };
+    if (!s.open) return { bad: `${fmtDate(date)} ${time} 은 이미 찼습니다` };
+    return { fields: step2Fields(view.theme, date, s), num: s.num };
+  }
+
+  // 사람이 직접 오픈을 보고 누를 때. 슬롯 번호는 날짜마다 달라서 한 번 조회해서 받는다
+  async function openNow() {
+    setManual(true);
+    setState({ tone: 'wait', msg: '수동 조회 중' });
+    let j = null;
+    try {
+      j = await (await fetch(`/api/keyescape?zizum=${zizum}&theme=${view.theme.theme}&date=${date}`)).json();
+    } catch {
+      /* 아래에서 응답 없음 */
+    }
+    setManual(false);
+    const r = pickSlot(j);
+    if (r?.fields) {
+      setState({ tone: 'good', msg: `열림! #${r.num} 로 이동합니다` });
+      setGo(r.fields);
+      setArmed(false);
+    } else {
+      setState({ tone: 'bad', msg: r?.bad || `아직 안 열렸습니다 · ${j?.msg || '응답 없음'}` });
+    }
+  }
 
   const tone = { wait: 'text-brass', good: 'text-jade', bad: 'text-rust' };
 
@@ -221,6 +248,13 @@ function OpenWait({ view, zizum }) {
             대기 시작
           </button>
         )}
+        <button
+          onClick={openNow}
+          disabled={!ready || manual}
+          className={`${btn} bg-jade text-ink hover:bg-jade/90`}
+        >
+          {manual ? '조회 중…' : '수동 오픈'}
+        </button>
         {armed && openMs > now - (skew || 0) && (
           <span className="font-mono text-2xl tabular-nums text-bone">{left(openMs - now + (skew || 0))}</span>
         )}
@@ -244,7 +278,8 @@ function OpenWait({ view, zizum }) {
       <p className="mt-5 font-mono text-[11px] leading-relaxed text-edge">
         오픈 {POLL_FROM / 1000}초 전부터 {POLL_EVERY / 1000}초 간격으로 그 날짜만 조회합니다. 열리면 이 탭이 바로
         예약 화면으로 넘어가니 북마클릿 → 캡차 → 예약하기만 누르세요. 대기 중엔 이 탭을 앞에 띄워두세요 (크롬은
-        뒤로 간 탭의 타이머를 늦춥니다). 시각은 PC 시계가 아니라 키이스케이프 서버 시계 기준으로 셉니다.
+        뒤로 간 탭의 타이머를 늦춥니다). 직접 서버 시계를 보다가 열렸다 싶으면 수동 오픈을 누르세요 — 그 날짜를 한 번
+        조회해서 같은 예약 화면으로 바로 넘어갑니다. 시각은 PC 시계가 아니라 키이스케이프 서버 시계 기준으로 셉니다.
       </p>
     </section>
   );
