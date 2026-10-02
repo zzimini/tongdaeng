@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { BRANCHES, fmtDate } from '@/lib/keyescape';
 
 /* 알림봇(/keyescape)과 예약 도우미(/keyescape/book)가 같이 쓰는 조각 */
@@ -68,31 +68,36 @@ export function useThemeView() {
   const [view, setView] = useState(null); // { theme, url, today, dates }
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const seq = useRef(0); // 지점·테마를 빨리 바꾸면 늦게 온 예전 응답이 덮어쓰지 않도록
 
   useEffect(() => {
     if (!zizum) return;
+    const my = ++seq.current;
     setList([]);
     setInfo('');
     setView(null);
     setErr('');
+    setBusy(false);
     fetch(`/api/keyescape?zizum=${zizum}`)
       .then((r) => r.json())
-      .then((j) => (j.ok ? setList(j.themes) : setErr(j.msg)))
-      .catch((e) => setErr(String(e)));
+      .then((j) => my === seq.current && (j.ok ? setList(j.themes) : setErr(j.msg || '테마 목록 조회 실패')))
+      .catch((e) => my === seq.current && setErr(String(e)));
   }, [zizum]);
 
   async function load(i = info) {
     if (!i) return;
+    const my = ++seq.current;
     setBusy(true);
     setErr('');
     try {
       const j = await (await fetch(`/api/keyescape?zizum=${zizum}&info=${i}`)).json();
+      if (my !== seq.current) return;
       if (j.ok) setView(j);
-      else setErr(j.msg);
+      else setErr(j.msg || '현황 조회 실패');
     } catch (e) {
-      setErr(String(e));
+      if (my === seq.current) setErr(String(e));
     } finally {
-      setBusy(false);
+      if (my === seq.current) setBusy(false);
     }
   }
 
