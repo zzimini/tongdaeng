@@ -10,7 +10,8 @@ import { box, lbl, card, btn, h2, Copy, Header, useThemeView, ThemePicker, SlotG
 const ME_KEY = 'tongdaeng_keyescape_me';
 
 const POLL_FROM = 1_000; // 오픈 몇 ms 전부터 조회 (서버 시계 기준)
-const POLL_EVERY = 300;
+const POLL_EVERY = 300; // 응답을 기다리지 않고 이 간격으로 계속 보낸다
+const IN_FLIGHT = 4; // 서버가 느려도 동시에 이 이상은 안 보냄
 const POLL_UNTIL = 90_000; // 오픈 후 이만큼 안 열리면 포기
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -36,7 +37,12 @@ function OpenWait({ view, zizum }) {
   const doing = view.theme.doing;
   const times = [...new Set(Object.values(view.dates).flat().map((s) => s.time))].sort();
 
-  const [date, setDate] = useState(addDays(view.today, doing)); // 다음에 열릴 날짜
+  // 다음에 열릴 날짜: 오늘 오픈 전이면 오늘 열리는 창 끝 날짜, 지났으면 내일 열릴 날짜
+  const [date, setDate] = useState(() => {
+    const o = BRANCH_OPEN[zizum];
+    const before = o && kstMs(view.today, o) > Date.now();
+    return addDays(view.today, before ? doing - 1 : doing);
+  });
   const [time, setTime] = useState(times[0] || '');
   const [at, setAt] = useState(BRANCH_OPEN[zizum] || '');
   const [armed, setArmed] = useState(false);
@@ -120,8 +126,37 @@ function OpenWait({ view, zizum }) {
       const deadline = Math.max(target, clock()) + POLL_UNTIL;
 
       let tries = 0;
+      let inFlight = 0;
+      let done = false;
       let last = '';
-      while (!stop) {
+
+      // 응답 하나 처리. 열림/포기가 나오면 done 으로 나머지 응답은 무시
+      const handle = (n, j) => {
+        if (stop || done) return;
+        const r = pickSlot(j);
+        if (r?.fields) {
+          done = true;
+          say('good', `조회 ${n}회 · 열림! #${r.num} 로 이동합니다`);
+          setGo(r.fields);
+          setArmed(false);
+          return;
+        }
+        if (r?.bad) {
+          done = true;
+          end('bad', r.bad);
+          return;
+        }
+        // 같은 응답이 반복되면 기록엔 한 줄만
+        const why = j?.msg || '응답 없음';
+        if (why !== last) {
+          last = why;
+          say('wait', `조회 ${n}회 · ${why}`);
+        } else {
+          setState({ tone: 'wait', msg: `조회 ${n}회 · ${why}` });
+        }
+      };
+
+      while (!stop && !done) {
         const rest = target - clock();
         if (rest > POLL_FROM) {
           if (!recal && rest < 15_000) {
@@ -137,33 +172,19 @@ function OpenWait({ view, zizum }) {
           continue;
         }
         if (clock() > deadline) {
+          done = true;
           end('bad', `${POLL_UNTIL / 1000}초 동안 조회했지만 ${fmtDate(date)} 이 열리지 않았습니다. 오픈 시각을 확인하세요.`);
           return;
         }
 
-        tries++;
-        const j = await ask();
-        if (stop) return;
-
-        const r = pickSlot(j);
-        if (r?.fields) {
-          say('good', `조회 ${tries}회 · 열림! #${r.num} 로 이동합니다`);
-          setGo(r.fields);
-          setArmed(false);
-          return;
-        }
-        if (r?.bad) {
-          end('bad', r.bad);
-          return;
-        }
-
-        // 같은 응답이 반복되면 기록엔 한 줄만
-        const why = j?.msg || '응답 없음';
-        if (why !== last) {
-          last = why;
-          say('wait', `조회 ${tries}회 · ${why}`);
-        } else {
-          setState({ tone: 'wait', msg: `조회 ${tries}회 · ${why}` });
+        // 오픈 순간엔 응답이 1초 가까이 걸려서, 기다렸다 보내면 그만큼 늦는다. 겹쳐서 보낸다
+        if (inFlight < IN_FLIGHT) {
+          const n = ++tries;
+          inFlight++;
+          ask().then((j) => {
+            inFlight--;
+            handle(n, j);
+          });
         }
         await sleep(POLL_EVERY);
       }
@@ -311,7 +332,7 @@ function OpenWait({ view, zizum }) {
       )}
 
       <p className="mt-5 font-mono text-[11px] leading-relaxed text-edge">
-        오픈 {POLL_FROM / 1000}초 전부터 {POLL_EVERY / 1000}초 간격으로 그 날짜만 조회합니다. 열리면 이 탭이 바로
+        오픈 {POLL_FROM / 1000}초 전부터 {POLL_EVERY / 1000}초 간격으로 그 날짜만 조회합니다 (응답을 기다리지 않고 겹쳐 보냄). 열리면 이 탭이 바로
         예약 화면으로 넘어가니 북마클릿 → 캡차 → 예약하기만 누르세요. 대기 중엔 이 탭을 앞에 띄워두세요 (크롬은
         뒤로 간 탭의 타이머를 늦춥니다). 직접 서버 시계를 보다가 열렸다 싶으면 수동 오픈을 누르세요 — 그 날짜를 한 번
         조회해서 같은 예약 화면으로 바로 넘어갑니다. 시각은 PC 시계가 아니라 키이스케이프 서버 시계 기준으로 셉니다.
