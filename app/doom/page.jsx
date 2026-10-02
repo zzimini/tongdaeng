@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { BRANCHES, branch, addDays, nextOpening, opensAt } from '@/lib/doom-open';
+import { BRANCHES, branch, addDays, kstToday, nextOpening, opensAt } from '@/lib/doom-open';
 
 const box =
   'w-full rounded-lg border border-edge bg-ink px-3 py-2 text-sm text-bone placeholder:text-edge ' +
@@ -60,6 +60,9 @@ export default function Doom() {
   const [zizum, setZizum] = useState('4');
   const [date, setDate] = useState('');
   const [themes, setThemes] = useState([]); // [{ name, times }] 가장 최근 열린 날짜 기준
+  const [days, setDays] = useState({}); // { 'YYYY-MM-DD': themes } 지금 열려 있는 날짜 전부
+  const [scanning, setScanning] = useState(false);
+  const [scanKey, setScanKey] = useState(0); // 새로고침
   const [theme, setTheme] = useState('');
   const [time, setTime] = useState('');
   const [loadErr, setLoadErr] = useState('');
@@ -91,30 +94,53 @@ export default function Doom() {
     }
   }, [adminKey, me]);
 
-  // 지점이 바뀌면: 다음에 열릴 날짜, 그리고 이미 열린 마지막 날짜로 테마·시간 목록
+  // 지점이 바뀌면 다음에 열릴 날짜로
   useEffect(() => {
-    let live = true;
-    const next = nextOpening(zizum);
-    setDate(next);
-    setThemes([]);
+    setDate(nextOpening(zizum));
     setTheme('');
     setTime('');
+  }, [zizum]);
+
+  // 지금 열려 있는 날짜(오늘 ~ 다음 오픈 전날)를 전부 조회. 테마·시간 목록은 마지막 날짜 기준
+  useEffect(() => {
+    let live = true;
+    const last = addDays(nextOpening(zizum), -1);
+    const list = [];
+    for (let d = kstToday(); d <= last; d = addDays(d, 1)) list.push(d);
+    setDays({});
+    setThemes([]);
     setLoadErr('');
-    fetch(`/api/doom?zizum=${zizum}&date=${addDays(next, -1)}`)
-      .then((r) => r.json())
-      .then((j) => {
-        if (!live) return;
-        if (!j.ok) return setLoadErr(j.msg || '시간표 조회 실패');
-        const list = j.themes.filter((t) => t.slots.length).map((t) => ({ name: t.name, times: t.slots.map((s) => s.time) }));
-        setThemes(list);
-        setTheme(list[0]?.name || '');
-        setTime(list[0]?.times[0] || '');
-      })
-      .catch((e) => live && setLoadErr(String(e)));
+    setScanning(true);
+
+    (async () => {
+      const got = {};
+      // 지점당 최대 16일이라 4개씩 나눠 조회
+      for (let i = 0; i < list.length && live; i += 4) {
+        await Promise.all(
+          list.slice(i, i + 4).map(async (d) => {
+            try {
+              const j = await (await fetch(`/api/doom?zizum=${zizum}&date=${d}`)).json();
+              if (j.ok) got[d] = j.themes;
+            } catch {
+              /* 그 날짜만 빠짐 */
+            }
+          })
+        );
+        if (live) setDays({ ...got });
+      }
+      if (!live) return;
+      setScanning(false);
+      const ref = [...list].reverse().find((d) => got[d]?.some((t) => t.slots.length));
+      if (!ref) return setLoadErr('시간표 조회 실패');
+      const ts = got[ref].filter((t) => t.slots.length).map((t) => ({ name: t.name, times: t.slots.map((s) => s.time) }));
+      setThemes(ts);
+      setTheme((cur) => (ts.some((t) => t.name === cur) ? cur : ts[0]?.name || ''));
+      setTime((cur) => cur || ts[0]?.times[0] || '');
+    })();
     return () => {
       live = false;
     };
-  }, [zizum]);
+  }, [zizum, scanKey]);
 
   const times = themes.find((t) => t.name === theme)?.times || [];
   const openMs = date ? opensAt(zizum, date) : NaN;
@@ -394,6 +420,82 @@ export default function Doom() {
               {openMs <= now && ' · 이미 열린 날짜라 대기를 누르면 바로 조회합니다'}
             </p>
           )}
+        </section>
+
+        <section className={card}>
+          <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+            <h2 className="font-mono text-xs uppercase tracking-[0.2em] text-mute">
+              열린 날짜 현황 · {theme || '테마'}
+            </h2>
+            <button
+              onClick={() => setScanKey((k) => k + 1)}
+              disabled={scanning || lock}
+              className={`${btn} bg-edge text-bone hover:bg-edge/70`}
+            >
+              {scanning ? '조회 중…' : '새로고침'}
+            </button>
+          </div>
+          <div className="space-y-2">
+            {Object.keys(days)
+              .sort()
+              .map((d) => {
+                const t = days[d].find((x) => x.name === theme);
+                const slots = t?.slots || [];
+                const openN = slots.filter((x) => x.open).length;
+                return (
+                  <div
+                    key={d}
+                    className={`flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-edge/50 pb-2 ${openN ? '' : 'opacity-50'}`}
+                  >
+                    <button
+                      onClick={() => setDate(d)}
+                      disabled={lock}
+                      className={`w-28 shrink-0 text-left font-mono text-sm ${
+                        d === date ? 'text-brass underline' : openN ? 'text-jade' : 'text-mute line-through'
+                      }`}
+                    >
+                      {fmtDate(d)}
+                    </button>
+                    <span className={`w-14 shrink-0 font-mono text-[11px] ${openN ? 'text-jade' : 'text-rust'}`}>
+                      {openN ? `${openN}자리` : '마감'}
+                    </span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {slots.map((x) => (
+                        <button
+                          key={x.time}
+                          disabled={!x.open || lock}
+                          onClick={() => {
+                            setDate(d);
+                            setTime(x.time);
+                          }}
+                          className={`rounded px-2 py-1 font-mono text-[11px] ${
+                            d === date && x.time === time
+                              ? 'bg-brass text-ink'
+                              : x.open
+                                ? 'bg-jade/15 text-jade hover:bg-jade/30'
+                                : 'bg-edge/40 text-edge line-through'
+                          }`}
+                        >
+                          {x.time}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            {date && !days[date] && !scanning && (
+              <div className="flex flex-wrap items-center gap-x-3 border-b border-edge/50 pb-2">
+                <span className="w-28 shrink-0 font-mono text-sm text-brass underline">{fmtDate(date)}</span>
+                <span className="font-mono text-[11px] text-brass">
+                  {openMs > now ? `아직 안 열림 · ${fmtAt(openMs)} 오픈` : '조회 범위 밖'}
+                </span>
+              </div>
+            )}
+            {!Object.keys(days).length && <p className="text-sm text-mute">{loadErr || '불러오는 중…'}</p>}
+          </div>
+          <p className="mt-3 font-mono text-[11px] text-edge">
+            초록 = 예약 가능 · 회색 줄 = 마감. 시간을 누르면 날짜와 시간이 같이 골라집니다.
+          </p>
         </section>
 
         <section className={card}>
