@@ -184,7 +184,6 @@ export default function Doom() {
   }
 
   async function bookNow() {
-    if (!window.confirm(`${fmtDate(date)} ${theme} ${time} 을 실제로 예약합니다`)) return;
     setBusy(true);
     say('wait', '지금 예약 · 보내는 중');
     report(await post({ act: 'book' }), '지금 예약');
