@@ -9,8 +9,8 @@ import { box, lbl, card, btn, h2, Copy, Header, useThemeView, ThemePicker, SlotG
 
 const ME_KEY = 'tongdaeng_keyescape_me';
 
-const POLL_FROM = 3_000; // 오픈 몇 ms 전부터 조회
-const POLL_EVERY = 500;
+const POLL_FROM = 1_000; // 오픈 몇 ms 전부터 조회 (서버 시계 기준)
+const POLL_EVERY = 300;
 const POLL_UNTIL = 90_000; // 오픈 후 이만큼 안 열리면 포기
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -38,6 +38,7 @@ function OpenWait({ view, zizum }) {
   const [now, setNow] = useState(Date.now());
   const [state, setState] = useState(null); // { tone, msg }
   const [go, setGo] = useState(null); // 이동할 step2 필드
+  const [skew, setSkew] = useState(null); // PC 시계 - 서버 시계 (ms)
   const formRef = useRef(null);
 
   const openDate = date ? opensOn(date, doing) : '';
@@ -58,30 +59,73 @@ function OpenWait({ view, zizum }) {
       setArmed(false);
     };
 
-    // 이미 열린 날짜면 openMs 가 과거라서, 대기 시작 시점부터 센다
-    const deadline = Math.max(openMs, Date.now()) + POLL_UNTIL;
+    // 오픈 판정은 keyescape 서버 시계로 한다. PC 시계가 몇 초 틀리면 정각에 조회해도 아직 안 열려 있으므로
+    // 응답의 서버 시각(초 단위)으로 오차를 잰다. 서버 시각 D 는 [요청 보냄, 응답 받음] 사이 어느 순간의
+    // 값이고 실제로는 [D, D+1초) 이니, 여러 번 재서 범위를 좁힌 뒤 가운데를 쓴다.
+    let lo = -Infinity;
+    let hi = Infinity;
+    let off = 0; // 서버 - PC
+    let target = openMs;
+    const clock = () => Date.now() + off;
+
+    const ask = async () => {
+      const t0 = Date.now();
+      let j = null;
+      try {
+        j = await (await fetch(`/api/keyescape?zizum=${zizum}&theme=${view.theme.theme}&date=${date}`)).json();
+      } catch {
+        return null;
+      }
+      const t1 = Date.now();
+      if (j?.serverDate) {
+        const a = j.serverDate - t1;
+        const b = j.serverDate + 1000 - t0;
+        [lo, hi] = Math.max(lo, a) <= Math.min(hi, b) ? [Math.max(lo, a), Math.min(hi, b)] : [a, b];
+        off = (lo + hi) / 2;
+        setSkew(-off);
+      }
+      // 서버가 알려준 오픈 시각으로 맞춤
+      if (j?.openAt && /^\d{2}:\d{2}$/.test(j.openAt)) {
+        target = kstMs(openDate, j.openAt);
+        if (j.openAt !== at) setAt(j.openAt);
+      }
+      return j;
+    };
+
+    const calibrate = async (n) => {
+      for (let i = 0; i < n && !stop; i++) {
+        await ask();
+        await sleep(170); // 초 경계를 여러 위상에서 잡도록 어긋나게
+      }
+    };
 
     (async () => {
+      setState({ tone: 'wait', msg: '서버 시계 맞추는 중' });
+      await calibrate(6);
+      let recal = false;
+      // 이미 열린 날짜면 target 이 과거라서, 대기 시작 시점부터 센다
+      const deadline = Math.max(target, clock()) + POLL_UNTIL;
+
       let tries = 0;
       while (!stop) {
-        const rest = openMs - Date.now();
+        const rest = target - clock();
         if (rest > POLL_FROM) {
+          if (!recal && rest < 15_000) {
+            recal = true;
+            await calibrate(4);
+            continue;
+          }
           setState({ tone: 'wait', msg: '오픈 대기 중' });
           await sleep(Math.min(rest - POLL_FROM, 250));
           continue;
         }
-        if (Date.now() > deadline) {
+        if (clock() > deadline) {
           end('bad', `${POLL_UNTIL / 1000}초 동안 조회했지만 ${fmtDate(date)} 이 열리지 않았습니다. 오픈 시각을 확인하세요.`);
           return;
         }
 
         tries++;
-        let j = null;
-        try {
-          j = await (await fetch(`/api/keyescape?zizum=${zizum}&theme=${view.theme.theme}&date=${date}`)).json();
-        } catch {
-          /* 다음 바퀴에 다시 */
-        }
+        const j = await ask();
         if (stop) return;
 
         if (j?.slots) {
@@ -100,7 +144,6 @@ function OpenWait({ view, zizum }) {
           return;
         }
 
-        if (j?.openAt && j.openAt !== at) setAt(j.openAt); // 서버가 알려준 오픈 시각으로 맞춤
         setState({ tone: 'wait', msg: `조회 ${tries}회 · ${j?.msg || '응답 없음'}` });
         await sleep(POLL_EVERY);
       }
@@ -178,11 +221,17 @@ function OpenWait({ view, zizum }) {
             대기 시작
           </button>
         )}
-        {armed && openMs > now && (
-          <span className="font-mono text-2xl tabular-nums text-bone">{left(openMs - now)}</span>
+        {armed && openMs > now - (skew || 0) && (
+          <span className="font-mono text-2xl tabular-nums text-bone">{left(openMs - now + (skew || 0))}</span>
         )}
         {state && <span className={`font-mono text-xs ${tone[state.tone]}`}>{state.msg}</span>}
       </div>
+      {skew !== null && Math.abs(skew) >= 300 && (
+        <p className="mt-2 font-mono text-xs text-mute">
+          이 PC 시계가 서버보다 {(Math.abs(skew) / 1000).toFixed(1)}초 {skew > 0 ? '빠릅니다' : '느립니다'} · 서버
+          시계 기준으로 맞춰 셉니다
+        </p>
+      )}
 
       {go && (
         <form ref={formRef} method="post" action={STEP2}>
@@ -195,7 +244,7 @@ function OpenWait({ view, zizum }) {
       <p className="mt-5 font-mono text-[11px] leading-relaxed text-edge">
         오픈 {POLL_FROM / 1000}초 전부터 {POLL_EVERY / 1000}초 간격으로 그 날짜만 조회합니다. 열리면 이 탭이 바로
         예약 화면으로 넘어가니 북마클릿 → 캡차 → 예약하기만 누르세요. 대기 중엔 이 탭을 앞에 띄워두세요 (크롬은
-        뒤로 간 탭의 타이머를 늦춥니다). 윈도우 시계를 미리 동기화해 두세요.
+        뒤로 간 탭의 타이머를 늦춥니다). 시각은 PC 시계가 아니라 키이스케이프 서버 시계 기준으로 셉니다.
       </p>
     </section>
   );
